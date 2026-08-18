@@ -1,3 +1,7 @@
+const {
+  downloadContentFromMessage
+} = require("@whiskeysockets/baileys");
+
 ﻿// ======================================================
 // OSTHAR MINI BOT - WHATSAPP TOOLS
 // LID-aware version
@@ -268,6 +272,339 @@ function displayNumber(
 }
 
 // ======================================================
+// VIEW ONCE HELPERS
+// ======================================================
+
+function unwrapMessageContent(
+  content
+) {
+  let current =
+    content || null;
+
+  // WhatsApp/Baileys may wrap View Once media in several
+  // container message types. Unwrap them safely.
+  for (
+    let i = 0;
+    i < 12 && current;
+    i++
+  ) {
+    if (current.ephemeralMessage?.message) {
+      current =
+        current.ephemeralMessage.message;
+      continue;
+    }
+
+    if (current.viewOnceMessage?.message) {
+      current =
+        current.viewOnceMessage.message;
+      continue;
+    }
+
+    if (current.viewOnceMessageV2?.message) {
+      current =
+        current.viewOnceMessageV2.message;
+      continue;
+    }
+
+    if (
+      current
+        .viewOnceMessageV2Extension
+        ?.message
+    ) {
+      current =
+        current
+          .viewOnceMessageV2Extension
+          .message;
+      continue;
+    }
+
+    if (current.documentWithCaptionMessage?.message) {
+      current =
+        current
+          .documentWithCaptionMessage
+          .message;
+      continue;
+    }
+
+    break;
+  }
+
+  return current;
+}
+
+function getQuotedMessageInfo(
+  msg
+) {
+  const context =
+    getContextInfo(msg);
+
+  const quoted =
+    context?.quotedMessage;
+
+  if (!quoted) {
+    return null;
+  }
+
+  return {
+    context,
+    quoted,
+    unwrapped:
+      unwrapMessageContent(
+        quoted
+      )
+  };
+}
+
+function getViewOnceMedia(
+  msg
+) {
+  const quotedInfo =
+    getQuotedMessageInfo(
+      msg
+    );
+
+  if (!quotedInfo) {
+    return null;
+  }
+
+  const {
+    context,
+    quoted,
+    unwrapped
+  } = quotedInfo;
+
+  const wasWrappedViewOnce =
+    !!(
+      quoted?.viewOnceMessage ||
+      quoted?.viewOnceMessageV2 ||
+      quoted?.viewOnceMessageV2Extension
+    );
+
+  const media =
+    unwrapped || {};
+
+  if (media.imageMessage) {
+    const node =
+      media.imageMessage;
+
+    if (
+      !wasWrappedViewOnce &&
+      !node?.viewOnce
+    ) {
+      return null;
+    }
+
+    return {
+      type:
+        "image",
+
+      node,
+
+      caption:
+        node?.caption ||
+        "",
+
+      context
+    };
+  }
+
+  if (media.videoMessage) {
+    const node =
+      media.videoMessage;
+
+    if (
+      !wasWrappedViewOnce &&
+      !node?.viewOnce
+    ) {
+      return null;
+    }
+
+    return {
+      type:
+        "video",
+
+      node,
+
+      caption:
+        node?.caption ||
+        "",
+
+      context
+    };
+  }
+
+  if (media.audioMessage) {
+    const node =
+      media.audioMessage;
+
+    if (
+      !wasWrappedViewOnce &&
+      !node?.viewOnce
+    ) {
+      return null;
+    }
+
+    return {
+      type:
+        "audio",
+
+      node,
+
+      caption:
+        "",
+
+      context
+    };
+  }
+
+  return null;
+}
+
+async function mediaNodeToBuffer(
+  node,
+  type
+) {
+  const stream =
+    await downloadContentFromMessage(
+      node,
+      type
+    );
+
+  const chunks = [];
+
+  for await (
+    const chunk of stream
+  ) {
+    chunks.push(
+      Buffer.from(chunk)
+    );
+  }
+
+  return Buffer.concat(
+    chunks
+  );
+}
+
+async function recoverViewOnce({
+  sock,
+  msg,
+  jid
+}) {
+  const media =
+    getViewOnceMedia(
+      msg
+    );
+
+  if (!media) {
+    return sendText(
+      sock,
+      jid,
+      msg,
+      "❌ *VIEW ONCE MEDIA NOT FOUND*\n\n" +
+      "Reply to a View Once image, video, or audio/voice message and type *.vv*."
+    );
+  }
+
+  try {
+    const buffer =
+      await mediaNodeToBuffer(
+        media.node,
+        media.type
+      );
+
+    if (
+      !buffer ||
+      !buffer.length
+    ) {
+      throw new Error(
+        "Downloaded media is empty."
+      );
+    }
+
+    if (
+      media.type === "image"
+    ) {
+      return sock.sendMessage(
+        jid,
+        {
+          image:
+            buffer,
+
+          caption:
+            media.caption ||
+            "Recovered View Once image."
+        },
+        {
+          quoted:
+            msg
+        }
+      );
+    }
+
+    if (
+      media.type === "video"
+    ) {
+      return sock.sendMessage(
+        jid,
+        {
+          video:
+            buffer,
+
+          caption:
+            media.caption ||
+            "Recovered View Once video.",
+
+          mimetype:
+            media.node?.mimetype ||
+            "video/mp4"
+        },
+        {
+          quoted:
+            msg
+        }
+      );
+    }
+
+    if (
+      media.type === "audio"
+    ) {
+      return sock.sendMessage(
+        jid,
+        {
+          audio:
+            buffer,
+
+          mimetype:
+            media.node?.mimetype ||
+            "audio/ogg; codecs=opus",
+
+          ptt:
+            !!media.node?.ptt
+        },
+        {
+          quoted:
+            msg
+        }
+      );
+    }
+
+  } catch (error) {
+    console.error(
+      "VV ERROR:",
+      error
+    );
+
+    return sendText(
+      sock,
+      jid,
+      msg,
+      "❌ *VIEW ONCE RECOVERY FAILED*\n\n" +
+      "The media may have expired, already been removed from WhatsApp servers, or the linked session may not have received its media data."
+    );
+  }
+}
+
+// ======================================================
 // MODULE
 // ======================================================
 
@@ -279,7 +616,8 @@ module.exports = {
     "profile",
     "savecontact",
     "poll",
-    "readmore"
+    "readmore",
+    "vv"
   ],
 
   description:
@@ -676,6 +1014,20 @@ module.exports = {
           "❌ Unable to create the poll."
         );
       }
+    }
+
+    // ==================================================
+    // VIEW ONCE RECOVERY
+    // ==================================================
+
+    if (
+      command === "vv"
+    ) {
+      return recoverViewOnce({
+        sock,
+        msg,
+        jid
+      });
     }
 
     // ==================================================

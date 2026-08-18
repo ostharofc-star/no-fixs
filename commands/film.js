@@ -1,5 +1,6 @@
-﻿// ======================================================
+// ======================================================
 // OSTHAR MINI BOT - LEGAL FILM DOWNLOADER
+// Sinhala + English title search
 // Public-domain / open-license content only
 // ======================================================
 
@@ -20,7 +21,8 @@ function cleanText(value = "") {
 async function fetchJson(url) {
   const response = await fetch(url, {
     headers: {
-      "User-Agent": "OSTHAR-MINI-BOT/1.0"
+      "User-Agent":
+        "OSTHAR-MINI-BOT/1.0"
     }
   });
 
@@ -34,15 +36,278 @@ async function fetchJson(url) {
 }
 
 // ======================================================
+// TEXT HELPERS
+// ======================================================
+
+function hasSinhalaText(value = "") {
+  return /[\u0D80-\u0DFF]/.test(
+    String(value || "")
+  );
+}
+
+function normalizeTitle(value = "") {
+  return cleanText(value)
+    .toLowerCase()
+    .replace(
+      /[\(\)\[\]\{\}"'`~!@#$%^&*_=+|\\/:;,.?<>-]/g,
+      " "
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function uniqueStrings(values = []) {
+  const seen =
+    new Set();
+
+  const output = [];
+
+  for (const value of values) {
+    const text =
+      cleanText(value);
+
+    if (!text) {
+      continue;
+    }
+
+    const key =
+      text.toLowerCase();
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    output.push(text);
+  }
+
+  return output;
+}
+
+function escapeArchiveTerm(value = "") {
+  return cleanText(value)
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"');
+}
+
+// ======================================================
+// WIKIDATA TITLE ALIASES
+// Helps Sinhala title -> English title and vice versa.
+// ======================================================
+
+async function searchWikidata(
+  query,
+  language
+) {
+  const url =
+    "https://www.wikidata.org/w/api.php" +
+    "?action=wbsearchentities" +
+    `&search=${encodeURIComponent(query)}` +
+    `&language=${encodeURIComponent(language)}` +
+    `&uselang=${encodeURIComponent(language)}` +
+    "&type=item" +
+    "&limit=5" +
+    "&format=json" +
+    "&origin=*";
+
+  try {
+    const data =
+      await fetchJson(url);
+
+    return Array.isArray(
+      data?.search
+    )
+      ? data.search
+      : [];
+
+  } catch (error) {
+    console.log(
+      "FILM WIKIDATA SEARCH ERROR:",
+      error?.message || error
+    );
+
+    return [];
+  }
+}
+
+async function getWikidataEntityAliases(
+  ids = []
+) {
+  if (!ids.length) {
+    return [];
+  }
+
+  const url =
+    "https://www.wikidata.org/w/api.php" +
+    "?action=wbgetentities" +
+    `&ids=${encodeURIComponent(
+      ids.join("|")
+    )}` +
+    "&props=labels|aliases|descriptions" +
+    "&languages=si|en" +
+    "&format=json" +
+    "&origin=*";
+
+  try {
+    const data =
+      await fetchJson(url);
+
+    const entities =
+      data?.entities || {};
+
+    const values = [];
+
+    for (
+      const entity
+      of Object.values(entities)
+    ) {
+      const descriptionText =
+        [
+          entity?.descriptions?.en?.value,
+          entity?.descriptions?.si?.value
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+
+      // Prefer movie/film related Wikidata entities.
+      // If description is absent, keep it as a fallback.
+      const likelyFilm =
+        !descriptionText ||
+        /film|movie|cinema|motion picture|චිත්‍රපට/.test(
+          descriptionText
+        );
+
+      if (!likelyFilm) {
+        continue;
+      }
+
+      if (
+        entity?.labels?.si?.value
+      ) {
+        values.push(
+          entity.labels.si.value
+        );
+      }
+
+      if (
+        entity?.labels?.en?.value
+      ) {
+        values.push(
+          entity.labels.en.value
+        );
+      }
+
+      const sinhalaAliases =
+        entity?.aliases?.si || [];
+
+      for (
+        const alias
+        of sinhalaAliases
+      ) {
+        if (alias?.value) {
+          values.push(alias.value);
+        }
+      }
+
+      const englishAliases =
+        entity?.aliases?.en || [];
+
+      for (
+        const alias
+        of englishAliases
+      ) {
+        if (alias?.value) {
+          values.push(alias.value);
+        }
+      }
+    }
+
+    return uniqueStrings(values);
+
+  } catch (error) {
+    console.log(
+      "FILM WIKIDATA ENTITY ERROR:",
+      error?.message || error
+    );
+
+    return [];
+  }
+}
+
+async function buildSearchAliases(
+  query
+) {
+  const original =
+    cleanText(query);
+
+  const aliases = [
+    original
+  ];
+
+  const languages =
+    hasSinhalaText(original)
+      ? ["si", "en"]
+      : ["en", "si"];
+
+  const ids = [];
+
+  for (const language of languages) {
+    const results =
+      await searchWikidata(
+        original,
+        language
+      );
+
+    for (
+      const result
+      of results
+    ) {
+      if (result?.id) {
+        ids.push(result.id);
+      }
+
+      if (result?.label) {
+        aliases.push(
+          result.label
+        );
+      }
+
+      if (result?.match?.text) {
+        aliases.push(
+          result.match.text
+        );
+      }
+    }
+  }
+
+  const entityAliases =
+    await getWikidataEntityAliases(
+      [...new Set(ids)]
+        .slice(0, 8)
+    );
+
+  aliases.push(
+    ...entityAliases
+  );
+
+  return uniqueStrings(aliases)
+    .slice(0, 12);
+}
+
+// ======================================================
 // LICENSE CHECK
 // ======================================================
 
-function isLegalOpenItem(metadata = {}) {
+function isLegalOpenItem(
+  metadata = {}
+) {
   const data = [
     metadata.licenseurl,
     metadata.rights,
     metadata.subject,
-    metadata.description
+    metadata.description,
+    metadata.notes
   ]
     .map(cleanText)
     .join(" ")
@@ -50,83 +315,77 @@ function isLegalOpenItem(metadata = {}) {
 
   const allowed = [
     "public domain",
+    "publicdomain",
     "creativecommons.org/publicdomain",
     "creativecommons.org/licenses/by/",
     "creativecommons.org/licenses/by-sa/",
-    "cc0"
+    "creativecommons.org/licenses/by-nc/",
+    "creativecommons.org/licenses/by-nc-sa/",
+    "cc0",
+    "creative commons attribution",
+    "creative commons by"
   ];
 
   return allowed.some(
-    item => data.includes(item)
+    item =>
+      data.includes(item)
   );
 }
 
 // ======================================================
-// SEARCH
+// INTERNET ARCHIVE SEARCH
 // ======================================================
 
-async function searchMovie(query) {
-  const safeQuery =
-    query.replace(/"/g, "");
-
-  const searchQuery =
-    `title:("${safeQuery}") AND mediatype:movies`;
-
+async function archiveSearch(
+  searchQuery,
+  rows = 30
+) {
   const url =
     "https://archive.org/advancedsearch.php" +
     `?q=${encodeURIComponent(searchQuery)}` +
-    "&fl[]=identifier,title,year" +
-    "&rows=20" +
+    "&fl[]=identifier,title,year,creator,description,subject,licenseurl,rights" +
+    `&rows=${rows}` +
     "&page=1" +
     "&output=json";
 
   const data =
     await fetchJson(url);
 
-  const results =
-    data?.response?.docs || [];
+  return data?.response?.docs || [];
+}
 
-  for (const result of results) {
-    if (!result.identifier) {
+function createArchiveQueries(
+  aliases = []
+) {
+  const queries = [];
+
+  for (
+    const alias
+    of aliases.slice(0, 8)
+  ) {
+    const safe =
+      escapeArchiveTerm(alias);
+
+    if (!safe) {
       continue;
     }
 
-    try {
-      const item =
-        await fetchJson(
-          `https://archive.org/metadata/${encodeURIComponent(
-            result.identifier
-          )}`
-        );
+    // Strong title match
+    queries.push(
+      `title:("${safe}") AND mediatype:movies`
+    );
 
-      if (
-        !isLegalOpenItem(
-          item?.metadata || {}
-        )
-      ) {
-        continue;
-      }
-
-      return {
-        result,
-        item
-      };
-
-    } catch (error) {
-      console.error(
-        "FILM ITEM ERROR:",
-        error.message
-      );
-    }
+    // Broader metadata match
+    queries.push(
+      `("${safe}") AND mediatype:movies`
+    );
   }
 
-  throw new Error(
-    "No legal public-domain/open-license copy was found."
-  );
+  return uniqueStrings(queries);
 }
 
 // ======================================================
-// SIZE
+// SIZE / QUALITY / VIDEO
 // ======================================================
 
 function getSize(file) {
@@ -150,8 +409,11 @@ function formatSize(bytes) {
     "GB"
   ];
 
-  let value = bytes;
-  let unit = 0;
+  let value =
+    bytes;
+
+  let unit =
+    0;
 
   while (
     value >= 1024 &&
@@ -167,14 +429,13 @@ function formatSize(bytes) {
   )} ${units[unit]}`;
 }
 
-// ======================================================
-// QUALITY
-// ======================================================
-
-function detectQuality(file = {}) {
+function detectQuality(
+  file = {}
+) {
   const name =
-    String(file.name || "")
-      .toLowerCase();
+    String(
+      file.name || ""
+    ).toLowerCase();
 
   const height =
     Number(
@@ -217,21 +478,21 @@ function detectQuality(file = {}) {
     ["360p", "360p"]
   ];
 
-  for (const [
-    search,
-    label
-  ] of qualities) {
-    if (name.includes(search)) {
+  for (
+    const [
+      search,
+      label
+    ] of qualities
+  ) {
+    if (
+      name.includes(search)
+    ) {
       return label;
     }
   }
 
   return "Unknown";
 }
-
-// ======================================================
-// VIDEO SCORE
-// ======================================================
 
 function qualityScore(file) {
   const quality =
@@ -276,11 +537,9 @@ function qualityScore(file) {
   return 0;
 }
 
-// ======================================================
-// FIND BEST VIDEO
-// ======================================================
-
-function findBestVideo(files = []) {
+function findBestVideo(
+  files = []
+) {
   const videos =
     files.filter(file => {
       const name =
@@ -289,9 +548,8 @@ function findBestVideo(files = []) {
         ).toLowerCase();
 
       if (
-        !/\.(mp4|m4v|webm|mkv)$/i.test(
-          name
-        )
+        !/\.(mp4|m4v|webm|mkv)$/i
+          .test(name)
       ) {
         return false;
       }
@@ -299,7 +557,6 @@ function findBestVideo(files = []) {
       const size =
         getSize(file);
 
-      // Ignore tiny previews
       if (
         size &&
         size <
@@ -315,7 +572,6 @@ function findBestVideo(files = []) {
     return null;
   }
 
-  // Prefer MP4
   const mp4 =
     videos.filter(file =>
       /\.mp4$/i.test(
@@ -351,7 +607,7 @@ function findBestVideo(files = []) {
 }
 
 // ======================================================
-// SUBTITLE
+// SINHALA SUBTITLE
 // ======================================================
 
 function findSinhalaSubtitle(
@@ -360,7 +616,9 @@ function findSinhalaSubtitle(
   const subtitles =
     files.filter(file =>
       /\.(srt|vtt)$/i.test(
-        String(file?.name || "")
+        String(
+          file?.name || ""
+        )
       )
     );
 
@@ -385,8 +643,293 @@ function findSinhalaSubtitle(
         word =>
           name.includes(word)
       );
-    }) || null
+    }) ||
+    null
   );
+}
+
+// ======================================================
+// RESULT SCORING
+// ======================================================
+
+function scoreTitleMatch(
+  title,
+  aliases
+) {
+  const normalizedTitle =
+    normalizeTitle(title);
+
+  if (!normalizedTitle) {
+    return 0;
+  }
+
+  let score = 0;
+
+  for (
+    const alias
+    of aliases
+  ) {
+    const normalizedAlias =
+      normalizeTitle(alias);
+
+    if (!normalizedAlias) {
+      continue;
+    }
+
+    if (
+      normalizedTitle ===
+      normalizedAlias
+    ) {
+      score =
+        Math.max(
+          score,
+          1000
+        );
+
+      continue;
+    }
+
+    if (
+      normalizedTitle.includes(
+        normalizedAlias
+      ) ||
+      normalizedAlias.includes(
+        normalizedTitle
+      )
+    ) {
+      score =
+        Math.max(
+          score,
+          700
+        );
+
+      continue;
+    }
+
+    const titleWords =
+      new Set(
+        normalizedTitle
+          .split(" ")
+          .filter(Boolean)
+      );
+
+    const aliasWords =
+      normalizedAlias
+        .split(" ")
+        .filter(Boolean);
+
+    if (!aliasWords.length) {
+      continue;
+    }
+
+    const matching =
+      aliasWords.filter(
+        word =>
+          titleWords.has(word)
+      ).length;
+
+    const ratio =
+      matching /
+      aliasWords.length;
+
+    score =
+      Math.max(
+        score,
+        Math.round(
+          ratio * 500
+        )
+      );
+  }
+
+  return score;
+}
+
+function sriLankaBonus(
+  metadata = {}
+) {
+  const data = [
+    metadata.title,
+    metadata.subject,
+    metadata.description,
+    metadata.creator,
+    metadata.collection
+  ]
+    .map(cleanText)
+    .join(" ")
+    .toLowerCase();
+
+  if (
+    /sri lanka|srilanka|ceylon|sinhala|sinhalese|ශ්‍රී ලංකා|සිංහල/.test(
+      data
+    )
+  ) {
+    return 100;
+  }
+
+  return 0;
+}
+
+// ======================================================
+// FIND LEGAL OPEN FILM
+// ======================================================
+
+async function findLegalFilm(
+  query
+) {
+  const aliases =
+    await buildSearchAliases(
+      query
+    );
+
+  const searchQueries =
+    createArchiveQueries(
+      aliases
+    );
+
+  const docsById =
+    new Map();
+
+  for (
+    const searchQuery
+    of searchQueries
+  ) {
+    try {
+      const docs =
+        await archiveSearch(
+          searchQuery,
+          20
+        );
+
+      for (
+        const doc
+        of docs
+      ) {
+        if (
+          doc?.identifier &&
+          !docsById.has(
+            doc.identifier
+          )
+        ) {
+          docsById.set(
+            doc.identifier,
+            doc
+          );
+        }
+      }
+
+      // Avoid too many metadata requests.
+      if (
+        docsById.size >= 35
+      ) {
+        break;
+      }
+
+    } catch (error) {
+      console.log(
+        "FILM ARCHIVE SEARCH ERROR:",
+        error?.message || error
+      );
+    }
+  }
+
+  const candidates = [];
+
+  for (
+    const result
+    of [...docsById.values()]
+      .slice(0, 35)
+  ) {
+    try {
+      const item =
+        await fetchJson(
+          "https://archive.org/metadata/" +
+          encodeURIComponent(
+            result.identifier
+          )
+        );
+
+      const metadata =
+        item?.metadata || {};
+
+      if (
+        !isLegalOpenItem(metadata)
+      ) {
+        continue;
+      }
+
+      const files =
+        Array.isArray(item?.files)
+          ? item.files
+          : [];
+
+      const video =
+        findBestVideo(files);
+
+      if (!video) {
+        continue;
+      }
+
+      const title =
+        cleanText(
+          metadata.title ||
+          result.title ||
+          query
+        );
+
+      const score =
+        scoreTitleMatch(
+          title,
+          aliases
+        ) +
+        sriLankaBonus(
+          metadata
+        ) +
+        Math.min(
+          qualityScore(video),
+          2160
+        ) / 20;
+
+      candidates.push({
+        result,
+        item,
+        video,
+        score
+      });
+
+    } catch (error) {
+      console.log(
+        "FILM ITEM ERROR:",
+        error?.message || error
+      );
+    }
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score -
+      a.score
+  );
+
+  if (!candidates.length) {
+    const tried =
+      aliases
+        .slice(0, 6)
+        .join(", ");
+
+    throw new Error(
+      "No legal public-domain/open-license copy was found." +
+      (
+        tried
+          ? ` Search names tried: ${tried}`
+          : ""
+      )
+    );
+  }
+
+  return {
+    ...candidates[0],
+    aliases
+  };
 }
 
 // ======================================================
@@ -458,6 +1001,7 @@ function waitForConfirmation({
             "messages.upsert",
             listener
           );
+
         } else if (
           typeof sock.ev
             .removeListener ===
@@ -474,7 +1018,6 @@ function waitForConfirmation({
     const timer =
       setTimeout(() => {
         cleanup();
-
         resolve(false);
       }, timeout);
 
@@ -484,7 +1027,10 @@ function waitForConfirmation({
           const messages =
             update?.messages || [];
 
-          for (const reply of messages) {
+          for (
+            const reply
+            of messages
+          ) {
             if (
               reply.key.remoteJid !==
               jid
@@ -528,14 +1074,12 @@ function waitForConfirmation({
 
             if (text === "1") {
               clearTimeout(timer);
-
               cleanup();
-
               resolve(true);
-
               return;
             }
           }
+
         } catch (error) {
           console.error(
             "FILM CONFIRM ERROR:",
@@ -564,7 +1108,7 @@ module.exports = {
   ],
 
   description:
-    "Download legal public-domain/open-license films.",
+    "Search Sinhala or English film titles and download legal public-domain/open-license copies.",
 
   reaction: "🎬",
 
@@ -584,9 +1128,13 @@ module.exports = {
         {
           text:
             "🎬 *FILM DOWNLOADER*\n\n" +
-            `Usage: ${prefix}film <movie name>\n\n` +
-            `Example:\n${prefix}film Night of the Living Dead\n\n` +
-            "Public-domain/open-license films only."
+            "Search using a Sinhala or English movie title.\n\n" +
+            `Examples:\n` +
+            `${prefix}film Gamperaliya\n` +
+            `${prefix}film ගම්පෙරළිය\n` +
+            `${prefix}film Rekava\n` +
+            `${prefix}film රේඛාව\n\n` +
+            "Only public-domain/open-license copies are supported."
         },
         {
           quoted: msg
@@ -599,7 +1147,9 @@ module.exports = {
         jid,
         {
           text:
-            "🔎 Searching for the film..."
+            "🔎 *SEARCHING FILM*\n\n" +
+            `Searching Sinhala + English title matches for:\n*${cleanText(query)}*\n\n` +
+            "Checking legal public-domain/open-license sources..."
         },
         {
           quoted: msg
@@ -608,9 +1158,11 @@ module.exports = {
 
       const {
         result,
-        item
+        item,
+        video,
+        aliases
       } =
-        await searchMovie(
+        await findLegalFilm(
           query
         );
 
@@ -649,22 +1201,15 @@ module.exports = {
           ? item.files
           : [];
 
-      const video =
-        findBestVideo(files);
-
-      if (!video) {
-        throw new Error(
-          "No downloadable video file was found."
-        );
-      }
-
       const subtitle =
         findSinhalaSubtitle(
           files
         );
 
       const quality =
-        detectQuality(video);
+        detectQuality(
+          video
+        );
 
       const size =
         formatSize(
@@ -678,6 +1223,23 @@ module.exports = {
             .pop() ||
           "Unknown"
         ).toUpperCase();
+
+      const matchedNames =
+        aliases
+          .filter(
+            alias =>
+              normalizeTitle(alias) !==
+              normalizeTitle(query)
+          )
+          .slice(0, 3);
+
+      const aliasText =
+        matchedNames.length
+          ? (
+              "\n🔤 *Alternate Titles:* " +
+              matchedNames.join(" • ")
+            )
+          : "";
 
       const details =
         await sock.sendMessage(
@@ -696,9 +1258,9 @@ module.exports = {
                 subtitle
                   ? "Available ✅"
                   : "Not Available ❌"
-              }\n\n` +
-
-              "━━━━━━━━━━━━━━━━━━\n\n" +
+              }` +
+              aliasText +
+              "\n\n━━━━━━━━━━━━━━━━━━\n\n" +
 
               "⬇️ *DOWNLOAD FILM*\n\n" +
               "Reply to this message with:\n\n" +
@@ -784,7 +1346,7 @@ module.exports = {
                 `${title}\n` +
                 `Quality: ${quality}\n` +
                 `Size: ${size}\n\n` +
-                "*Mini Bot Created by Pamoda Nethsara*"
+                "Legal public-domain/open-license source."
             }
           );
 
@@ -814,13 +1376,12 @@ module.exports = {
           sendError
         );
 
-        // Fallback direct download link
         await sock.sendMessage(
           jid,
           {
             text:
               "⚠️ *FILM FILE TOO LARGE OR UPLOAD FAILED*\n\n" +
-              "You can download the film directly using this legal source:\n\n" +
+              "Download the film directly from this legal source:\n\n" +
               `${filmUrl}`
           }
         );
@@ -885,6 +1446,7 @@ module.exports = {
               error?.message ||
               "Unknown error"
             }\n\n` +
+            "Try the Sinhala title or English title.\n" +
             "Only public-domain/open-license films are supported."
         },
         {

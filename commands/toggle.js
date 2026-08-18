@@ -1,4 +1,6 @@
-﻿const { setSetting } = require("../database/settings");
+﻿const {
+  setSetting
+} = require("../database/settings");
 
 const TOGGLES = {
   antidelete: "antiDelete",
@@ -18,8 +20,15 @@ const TOGGLES = {
 
 module.exports = {
   name: "toggle",
-  aliases: Object.keys(TOGGLES),
-  description: "Enable or disable bot features.",
+
+  aliases: [
+    ...Object.keys(TOGGLES),
+    "setstatusreact"
+  ],
+
+  description:
+    "Enable or disable bot features and set status reaction emoji.",
+
   reaction: "⚙️",
 
   async execute({
@@ -30,44 +39,187 @@ module.exports = {
     args,
     phone
   }) {
-    const settingKey = TOGGLES[command];
+    try {
 
-    if (!settingKey) {
-      return;
-    }
+      // ==================================================
+      // SET STATUS REACTION EMOJI
+      // ==================================================
 
-    const value = String(args[0] || "").toLowerCase();
+      if (
+        command ===
+        "setstatusreact"
+      ) {
+        const emoji =
+          String(
+            args?.[0] || ""
+          ).trim();
 
-    if (!["on", "off"].includes(value)) {
-      return sock.sendMessage(
+        if (!emoji) {
+          return await sock.sendMessage(
+            jid,
+            {
+              text:
+                "⚙️ *SET STATUS REACTION*\n\n" +
+                "Usage:\n" +
+                ".setstatusreact ❤️\n\n" +
+                "Examples:\n" +
+                ".setstatusreact 💚\n" +
+                ".setstatusreact ❤️\n" +
+                ".setstatusreact 🔥\n" +
+                ".setstatusreact 😍"
+            },
+            {
+              quoted: msg
+            }
+          );
+        }
+
+        // Keep value small
+        if (
+          emoji.length > 12
+        ) {
+          return await sock.sendMessage(
+            jid,
+            {
+              text:
+                "❌ *INVALID EMOJI*\n\n" +
+                "Please enter only one emoji.\n\n" +
+                "Example:\n" +
+                ".setstatusreact ❤️"
+            },
+            {
+              quoted: msg
+            }
+          );
+        }
+
+        await setSetting(
+          phone,
+          "statusReactEmoji",
+          emoji
+        );
+
+        return await sock.sendMessage(
+          jid,
+          {
+            text:
+              "✅ *STATUS REACTION UPDATED*\n\n" +
+              `Reaction Emoji: ${emoji}\n\n` +
+              "Use *.statusreact on* to enable automatic status reactions."
+          },
+          {
+            quoted: msg
+          }
+        );
+      }
+
+      // ==================================================
+      // NORMAL TOGGLES
+      // ==================================================
+
+      const settingKey =
+        TOGGLES[command];
+
+      if (!settingKey) {
+        return;
+      }
+
+      const value =
+        String(
+          args?.[0] || ""
+        )
+          .trim()
+          .toLowerCase();
+
+      if (
+        ![
+          "on",
+          "off"
+        ].includes(value)
+      ) {
+        return await sock.sendMessage(
+          jid,
+          {
+            text:
+              `⚙️ *${command.toUpperCase()}*\n\n` +
+              `Usage: .${command} on\n` +
+              `Usage: .${command} off`
+          },
+          {
+            quoted: msg
+          }
+        );
+      }
+
+      const enabled =
+        value === "on";
+
+      await setSetting(
+        phone,
+        settingKey,
+        enabled
+      );
+
+      // ==================================================
+      // SPECIAL STATUS REACT MESSAGE
+      // ==================================================
+
+      if (
+        command ===
+        "statusreact"
+      ) {
+        return await sock.sendMessage(
+          jid,
+          {
+            text:
+              "✅ *STATUS AUTO REACTION UPDATED*\n\n" +
+              `Status React: ${enabled ? "ON" : "OFF"}\n\n` +
+              (
+                enabled
+                  ? "The bot will automatically react to new WhatsApp statuses using your selected reaction emoji.\n\nUse *.setstatusreact ❤️* to change the emoji."
+                  : "Automatic status reactions are now disabled."
+              )
+          },
+          {
+            quoted: msg
+          }
+        );
+      }
+
+      // ==================================================
+      // NORMAL SUCCESS MESSAGE
+      // ==================================================
+
+      await sock.sendMessage(
         jid,
         {
           text:
-            `⚙️ *${command.toUpperCase()}*\n\n` +
-            `Usage: .${command} on\n` +
-            `Usage: .${command} off`
+            "✅ *SETTING UPDATED*\n\n" +
+            `${command}: ${enabled ? "ON" : "OFF"}\n\n` +
+            "Your preference has been saved successfully."
         },
-        { quoted: msg }
+        {
+          quoted: msg
+        }
+      );
+
+    } catch (error) {
+      console.log(
+        "TOGGLE COMMAND ERROR:",
+        error?.message || error
+      );
+
+      await sock.sendMessage(
+        jid,
+        {
+          text:
+            "❌ *SETTING ERROR*\n\n" +
+            "Unable to update this setting right now."
+        },
+        {
+          quoted: msg
+        }
       );
     }
-
-    const enabled = value === "on";
-
-    await setSetting(
-      phone,
-      settingKey,
-      enabled
-    );
-
-    await sock.sendMessage(
-      jid,
-      {
-        text:
-          `✅ *SETTING UPDATED*\n\n` +
-          `${command}: ${enabled ? "ON" : "OFF"}\n\n` +
-          "Your preference has been saved successfully."
-      },
-      { quoted: msg }
-    );
   }
 };
